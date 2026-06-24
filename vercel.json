@@ -1,13 +1,15 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "version": 2,
-  "builds": [
-    { "src": "api/index.py", "use": "@vercel/python" },
-    { "src": "public/index.html", "use": "@vercel/static" }
-  ],
-  "routes": [
-    { "src": "/api/(.*)", "dest": "api/index.py" },
-    { "src": "/(.*)", "dest": "/public/index.html" }
+  "functions": {
+    "api/index.py": {
+      "runtime": "vercel-python@4.3.0",
+      "maxDuration": 60
+    }
+  },
+  "rewrites": [
+    { "source": "/api/:path*", "destination": "/api/index.py" },
+    { "source": "/(.*)", "destination": "/public/index.html" }
   ],
   "crons": [
     { "path": "/api/cron/eod-scan", "schedule": "15 21 * * 1-5" }
