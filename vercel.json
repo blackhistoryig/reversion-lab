@@ -2,8 +2,7 @@
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "version": 2,
   "rewrites": [
-    { "source": "/api/:path*", "destination": "/api/index.py" },
-    { "source": "/(.*)", "destination": "/public/index.html" }
+    { "source": "/api/:path*", "destination": "/api/index.py" }
   ],
   "crons": [
     { "path": "/api/cron/eod-scan", "schedule": "15 21 * * 1-5" }

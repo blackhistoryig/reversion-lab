@@ -1,0 +1,381 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>Reversion Lab</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
+  <style>
+    :root{
+      --bg:#f7f6f2;--surface:#f9f8f5;--surface2:#fbfbf9;--offset:#f1ede8;
+      --border:rgba(40,37,29,.12);--text:#28251d;--muted:#686761;--inv:#f9f8f4;
+      --primary:#01696f;--success:#437a22;--warn:#da7101;--err:#a12c7b;--blue:#006494;
+      --r:.625rem;--rl:.875rem;--rx:1rem;
+    }
+    [data-dark]{
+      --bg:#171614;--surface:#1c1b19;--surface2:#201f1d;--offset:#1d1c1a;
+      --border:rgba(210,207,200,.1);--text:#cdccca;--muted:#9b9a98;--inv:#2b2a28;
+      --primary:#4f98a3;--success:#6daa45;--warn:#fdab43;--err:#d163a7;--blue:#5591c7;
+    }
+    *{box-sizing:border-box;margin:0;padding:0}
+    html,body{height:100%;background:var(--bg);color:var(--text);font-family:system-ui,sans-serif;font-size:15px;line-height:1.5}
+    button,input,select,textarea{font:inherit;color:inherit;background:none;border:none;cursor:pointer}
+    #authWall{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;background:var(--bg);z-index:99}
+    .auth-card{background:var(--surface);border:1px solid var(--border);border-radius:var(--rx);padding:2rem;width:min(360px,90vw);display:grid;gap:1rem}
+    #shell{display:grid;grid-template-columns:252px 1fr;height:100vh;overflow:hidden;visibility:hidden}
+    aside{overflow-y:auto;padding:1.5rem;background:var(--surface);border-right:1px solid var(--border)}
+    main{overflow-y:auto;padding:1.5rem;display:grid;gap:1.25rem;align-content:start}
+    .brand{display:flex;align-items:center;gap:.75rem;margin-bottom:2rem}
+    nav{display:grid;gap:.25rem}
+    nav button{min-height:42px;padding:0 1rem;text-align:left;border-radius:var(--r);font-size:.875rem}
+    nav button:hover,nav button.on{background:color-mix(in oklab,var(--primary) 12%,var(--offset))}
+    .card{background:var(--surface);border:1px solid var(--border);border-radius:var(--rx);padding:1.25rem}
+    .stack{display:grid;gap:.75rem}
+    .row{display:flex;flex-wrap:wrap;gap:.75rem;align-items:center}
+    .g4{display:grid;grid-template-columns:repeat(4,1fr);gap:1rem}
+    .g3{display:grid;grid-template-columns:repeat(3,1fr);gap:1rem}
+    .g2{display:grid;grid-template-columns:1.2fr .8fr;gap:1rem}
+    .kpi .label{font-size:.75rem;color:var(--muted);text-transform:uppercase;letter-spacing:.05em}
+    .kpi .val{font-size:1.6rem;font-variant-numeric:tabular-nums;line-height:1.1}
+    .btn{min-height:42px;padding:0 1.1rem;border-radius:var(--r);font-size:.875rem;font-weight:700;transition:opacity .15s}
+    .btn:hover{opacity:.82}.btn-primary{background:var(--primary);color:var(--inv)}
+    .btn-ghost{background:var(--offset);border:1px solid var(--border)}
+    .btn-sm{min-height:34px;padding:0 .8rem;font-size:.8rem}
+    .inp,.ta{width:100%;background:var(--surface2);border:1px solid var(--border);border-radius:var(--r);padding:.65rem .85rem;min-height:42px}
+    .ta{min-height:72px;resize:vertical}
+    label{font-size:.82rem;color:var(--muted)}
+    .badge{display:inline-flex;align-items:center;padding:.25rem .55rem;border-radius:9999px;font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.05em;white-space:nowrap}
+    .ok{background:color-mix(in oklab,var(--success) 14%,transparent);color:var(--success)}
+    .warn{background:color-mix(in oklab,var(--warn) 14%,transparent);color:var(--warn)}
+    .no{background:color-mix(in oklab,var(--err) 14%,transparent);color:var(--err)}
+    .info{background:color-mix(in oklab,var(--blue) 14%,transparent);color:var(--blue)}
+    .tbl-wrap{overflow-x:auto}
+    table{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums}
+    th,td{padding:.65rem .75rem;text-align:left;border-top:1px solid var(--border);font-size:.82rem;white-space:nowrap}
+    th{color:var(--muted);font-weight:700;border-top:none}
+    .view{display:none}.view.on{display:grid;gap:1.25rem}
+    .chart-wrap{position:relative;height:240px}
+    #toast{position:fixed;bottom:1.5rem;right:1.5rem;background:var(--surface);border:1px solid var(--border);border-radius:var(--rl);padding:.9rem 1.25rem;box-shadow:0 4px 16px rgba(0,0,0,.12);z-index:200;font-size:.875rem;max-width:320px;transition:opacity .35s;opacity:0;pointer-events:none}
+    #toast.show{opacity:1;pointer-events:auto}
+    .status-bar{margin-top:2rem;display:grid;gap:.5rem}
+    h2{font-size:1.3rem;line-height:1.1}h3{font-size:1rem}
+    .tiny{font-size:.78rem;color:var(--muted)}
+    @media(max-width:900px){html,body{overflow:auto}#shell{grid-template-columns:1fr;height:auto;overflow:visible}aside{border-right:none;border-bottom:1px solid var(--border)}main{overflow:visible}.g4,.g3,.g2{grid-template-columns:1fr 1fr}}
+    @media(max-width:540px){.g4,.g3,.g2{grid-template-columns:1fr}}
+  </style>
+</head>
+<body>
+<div id="authWall">
+  <div class="auth-card stack">
+    <div style="display:flex;align-items:center;gap:.75rem">
+      <svg width="40" height="40" viewBox="0 0 48 48" fill="none" style="color:var(--primary)">
+        <path d="M8 31C8 19.954 16.954 11 28 11h12v12C40 34.046 31.046 43 20 43H8V31Z" fill="currentColor" opacity=".15"/>
+        <path d="M11 31c0-9.389 7.611-17 17-17h9v9c0 9.389-7.611 17-17 17h-9v-9Z" stroke="currentColor" stroke-width="2.5"/>
+        <path d="M19 30h10" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/>
+      </svg>
+      <div><strong>Reversion Lab</strong><div class="tiny">Connect to your backend</div></div>
+    </div>
+    <div><label>API URL</label><input class="inp" id="aUrl" placeholder="https://your-app.vercel.app"/></div>
+    <div><label>Username</label><input class="inp" id="aUser" value="admin" autocomplete="username"/></div>
+    <div><label>Password</label><input class="inp" id="aPass" type="password" autocomplete="current-password"/></div>
+    <div id="aErr" class="tiny no" style="display:none"></div>
+    <button class="btn btn-primary" id="loginBtn" style="width:100%">Connect</button>
+  </div>
+</div>
+<div id="shell">
+  <aside>
+    <div class="brand">
+      <svg width="34" height="34" viewBox="0 0 48 48" fill="none" style="color:var(--primary)">
+        <path d="M8 31C8 19.954 16.954 11 28 11h12v12C40 34.046 31.046 43 20 43H8V31Z" fill="currentColor" opacity=".15"/>
+        <path d="M11 31c0-9.389 7.611-17 17-17h9v9c0 9.389-7.611 17-17 17h-9v-9Z" stroke="currentColor" stroke-width="2.5"/>
+        <path d="M19 30h10" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/>
+      </svg>
+      <div><strong>Reversion Lab</strong><div class="tiny" style="color:var(--muted)">v1.0</div></div>
+    </div>
+    <nav id="nav">
+      <button class="on" data-v="overview">Overview</button>
+      <button data-v="scanner">Scanner</button>
+      <button data-v="portfolio">Portfolio</button>
+      <button data-v="verification">Verification</button>
+      <button data-v="journal">Journal</button>
+      <button data-v="broker">Broker orders</button>
+      <button data-v="exports">Exports</button>
+    </nav>
+    <div class="status-bar">
+      <span class="badge no" id="connBadge">Disconnected</span>
+      <span class="badge info">Cron: 4:15 PM ET weekdays</span>
+    </div>
+    <div class="row" style="margin-top:1rem">
+      <button class="btn btn-ghost btn-sm" id="themeBtn" style="flex:1">Theme</button>
+      <button class="btn btn-ghost btn-sm" id="logoutBtn" style="flex:1">Logout</button>
+    </div>
+  </aside>
+  <main>
+    <section class="view on" id="overview">
+      <div class="card">
+        <div class="row" style="justify-content:space-between">
+          <div><h2>Scan, verify, size &amp; execute.</h2>
+            <p class="tiny" style="margin-top:.4rem;max-width:70ch">Twelve Data primary &middot; Polygon secondary &middot; Alpaca execution &middot; EOD cron fires 4:15 PM ET Mon&ndash;Fri.</p></div>
+          <div class="row">
+            <button class="btn btn-ghost btn-sm" id="triggerEodBtn">Trigger EOD scan</button>
+            <button class="btn btn-primary btn-sm" id="refreshBtn">Refresh</button>
+          </div>
+        </div>
+      </div>
+      <div class="g4">
+        <div class="card kpi"><div class="label">Active signals</div><div class="val" id="ovSig">&mdash;</div></div>
+        <div class="card kpi"><div class="label">Verified bars</div><div class="val" id="ovVer">&mdash;</div></div>
+        <div class="card kpi"><div class="label">Win rate</div><div class="val" id="ovWr">&mdash;</div></div>
+        <div class="card kpi"><div class="label">Total PnL</div><div class="val" id="ovPnl">&mdash;</div></div>
+      </div>
+      <div class="g2">
+        <div class="card"><div class="tiny" style="margin-bottom:.5rem">Equity curve</div><div class="chart-wrap"><canvas id="eqChart"></canvas></div></div>
+        <div class="card stack"><h3>Active signals</h3>
+          <div class="tbl-wrap"><table><thead><tr><th>Symbol</th><th>IBS</th><th>Signal</th><th>Verified</th></tr></thead><tbody id="ovSigTbl"></tbody></table></div></div>
+      </div>
+    </section>
+    <section class="view" id="scanner">
+      <div class="card stack">
+        <h2>Scanner</h2>
+        <div class="row">
+          <div style="flex:2;min-width:180px"><label>Symbols</label><input class="inp" id="sSyms" value="SPY,QQQ,AAPL,IWM,TLT"/></div>
+          <div style="min-width:110px"><label>IBS threshold</label><input class="inp" id="sIbs" value="0.30"/></div>
+          <div style="min-width:110px"><label>Range factor</label><input class="inp" id="sRf" value="2.5"/></div>
+          <div style="min-width:130px"><label>Account equity $</label><input class="inp" id="sEq" value="100000"/></div>
+          <div style="min-width:110px"><label>Risk per trade</label><input class="inp" id="sRisk" value="0.005"/></div>
+        </div>
+        <div class="row">
+          <label style="display:flex;align-items:center;gap:.4rem;cursor:pointer"><input type="checkbox" id="sAuto"/> Auto-execute (Alpaca paper)</label>
+          <button class="btn btn-primary" id="runScanBtn">Run scan</button>
+        </div>
+        <div class="tbl-wrap"><table><thead><tr><th>Symbol</th><th>Date</th><th>IBS</th><th>Range x</th><th>dClose</th><th>Verified</th><th>Signal</th><th>Max DD</th><th>Trades</th><th>Win%</th><th>Order</th></tr></thead><tbody id="scanTbl"></tbody></table></div>
+      </div>
+      <div id="scanAnalytics"></div>
+    </section>
+    <section class="view" id="portfolio">
+      <div class="card stack">
+        <div class="row" style="justify-content:space-between"><h2>Portfolio analytics</h2><button class="btn btn-ghost btn-sm" id="refPortBtn">Refresh</button></div>
+        <div class="g4" id="portKpis"></div>
+        <div class="tbl-wrap"><table><thead><tr><th>Symbol</th><th>Trades</th><th>Win rate</th><th>Avg net</th><th>Total PnL $</th></tr></thead><tbody id="portTbl"></tbody></table></div>
+      </div>
+      <div class="card"><div class="tiny" style="margin-bottom:.5rem">All-time equity curve</div><div class="chart-wrap"><canvas id="portChart"></canvas></div></div>
+    </section>
+    <section class="view" id="verification">
+      <div class="card stack">
+        <h2>Source verification</h2>
+        <div class="row"><input class="inp" id="vSym" value="SPY" style="max-width:120px"/><button class="btn btn-primary" id="loadVerBtn">Load</button></div>
+        <div class="tbl-wrap"><table><thead><tr><th>Date</th><th>Primary close</th><th>Secondary close</th><th>O diff</th><th>H diff</th><th>L diff</th><th>C diff</th><th>Status</th></tr></thead><tbody id="verTbl"></tbody></table></div>
+      </div>
+    </section>
+    <section class="view" id="journal">
+      <div class="g2">
+        <div class="card stack">
+          <h2>Log trade</h2>
+          <div><label>Symbol</label><input class="inp" id="jSym" value="SPY"/></div>
+          <div><label>Date</label><input class="inp" id="jDate" type="date"/></div>
+          <div><label>Entry price</label><input class="inp" id="jEntry" value="600"/></div>
+          <div><label>Exit price</label><input class="inp" id="jExit" value="603"/></div>
+          <div><label>Shares</label><input class="inp" id="jShares" value="10"/></div>
+          <div><label>Notes</label><textarea class="ta" id="jNotes">Both sources verified before entry.</textarea></div>
+          <button class="btn btn-primary" id="saveJournalBtn">Save entry</button>
+        </div>
+        <div class="card stack"><h3>Recent entries</h3>
+          <div class="tbl-wrap"><table><thead><tr><th>Date</th><th>Symbol</th><th>Entry</th><th>Exit</th><th>Shares</th><th>Verified</th><th>Notes</th></tr></thead><tbody id="jTbl"></tbody></table></div></div>
+      </div>
+    </section>
+    <section class="view" id="broker">
+      <div class="card stack">
+        <div class="row" style="justify-content:space-between">
+          <div><h2>Broker orders</h2><div class="tiny">Submitted only after verified signal + auto-execute enabled.</div></div>
+          <button class="btn btn-ghost btn-sm" id="refOrdBtn">Refresh</button>
+        </div>
+        <div class="tbl-wrap"><table><thead><tr><th>Symbol</th><th>Signal date</th><th>Qty</th><th>Side</th><th>Status</th><th>Submitted</th></tr></thead><tbody id="ordTbl"></tbody></table></div>
+      </div>
+    </section>
+    <section class="view" id="exports">
+      <div class="card stack">
+        <h2>CSV exports</h2>
+        <p class="tiny">Downloads use your active session credentials automatically.</p>
+        <div class="g3">
+          <button class="btn btn-ghost" data-exp="/api/export/trades.csv" data-fn="trades.csv">Export trades.csv</button>
+          <button class="btn btn-ghost" data-exp="/api/export/signals.csv" data-fn="signals.csv">Export signals.csv</button>
+          <button class="btn btn-ghost" data-exp="/api/export/verification.csv" data-fn="verification.csv">Export verification.csv</button>
+          <button class="btn btn-ghost" data-exp="/api/export/journal.csv" data-fn="journal.csv">Export journal.csv</button>
+          <button class="btn btn-ghost" data-exp="/api/export/portfolio-analytics.csv" data-fn="portfolio_analytics.csv">Export portfolio analytics</button>
+        </div>
+      </div>
+    </section>
+  </main>
+</div>
+<div id="toast"></div>
+<script>
+  let API='',AUTH='';
+  let eqC=null,portC=null;
+  let dark=matchMedia('(prefers-color-scheme:dark)').matches;
+  if(dark)document.documentElement.setAttribute('data-dark','');
+  document.getElementById('themeBtn').onclick=()=>{
+    dark=!dark;
+    dark?document.documentElement.setAttribute('data-dark',''):document.documentElement.removeAttribute('data-dark');
+  };
+  document.getElementById('nav').addEventListener('click',e=>{
+    const btn=e.target.closest('[data-v]');if(!btn)return;
+    document.querySelectorAll('[data-v]').forEach(b=>b.classList.remove('on'));
+    btn.classList.add('on');
+    document.querySelectorAll('.view').forEach(v=>v.classList.remove('on'));
+    document.getElementById(btn.dataset.v).classList.add('on');
+    if(btn.dataset.v==='portfolio')refreshPortfolio();
+    if(btn.dataset.v==='broker')refreshOrders();
+  });
+  function toast(msg,type='ok'){
+    const el=document.getElementById('toast');
+    el.textContent=msg;el.className='show '+(type==='err'?'no':type==='warn'?'warn':'ok');
+    clearTimeout(el._t);el._t=setTimeout(()=>el.classList.remove('show'),3400);
+  }
+  async function apiFetch(path,opts={}){
+    const res=await fetch(`${API}${path}`,{...opts,headers:{'Authorization':AUTH,'Content-Type':'application/json',...(opts.headers||{})}});
+    if(!res.ok)throw new Error(`${res.status} ${res.statusText}`);
+    return res;
+  }
+  async function apiJSON(path,opts={}){return(await apiFetch(path,opts)).json();}
+  document.getElementById('aUrl').value=location.origin;
+  document.getElementById('loginBtn').onclick=async()=>{
+    const u=document.getElementById('aUser').value;
+    const p=document.getElementById('aPass').value;
+    API=document.getElementById('aUrl').value.replace(/\/$/,'');
+    AUTH='Basic '+btoa(`${u}:${p}`);
+    try{
+      await apiJSON('/api/config');
+      document.getElementById('connBadge').textContent='Connected';
+      document.getElementById('connBadge').className='badge ok';
+      document.getElementById('authWall').style.display='none';
+      document.getElementById('shell').style.visibility='visible';
+      await refreshOverview();
+    }catch(e){
+      const el=document.getElementById('aErr');
+      el.textContent='Connection failed: '+e.message;el.style.display='';
+    }
+  };
+  document.getElementById('aPass').addEventListener('keydown',e=>{if(e.key==='Enter')document.getElementById('loginBtn').click();});
+  document.getElementById('logoutBtn').onclick=()=>{
+    AUTH='';API='';
+    document.getElementById('connBadge').textContent='Disconnected';
+    document.getElementById('connBadge').className='badge no';
+    document.getElementById('authWall').style.display='flex';
+    document.getElementById('shell').style.visibility='hidden';
+  };
+  function mkChart(id,pts,ref){
+    if(ref)ref.destroy();
+    const color=getComputedStyle(document.documentElement).getPropertyValue('--primary').trim();
+    return new Chart(document.getElementById(id),{
+      type:'line',
+      data:{labels:pts.map(p=>p.date),datasets:[{data:pts.map(p=>p.equity),borderColor:color,backgroundColor:'transparent',borderWidth:2,pointRadius:0,tension:.35}]},
+      options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}},scales:{x:{ticks:{maxTicksLimit:8},grid:{color:'rgba(127,127,127,.1)'}},y:{grid:{color:'rgba(127,127,127,.1)'}}}}
+    });
+  }
+  async function refreshOverview(){
+    try{
+      const [sum,curve]=await Promise.all([apiJSON('/api/dashboard-summary'),apiJSON('/api/equity-curve')]);
+      const a=sum.portfolio_analytics||{};
+      document.getElementById('ovSig').textContent=sum.signals_count??0;
+      document.getElementById('ovVer').textContent=sum.verified_count??0;
+      document.getElementById('ovWr').textContent=a.win_rate!=null?`${(a.win_rate*100).toFixed(1)}%`:'--';
+      document.getElementById('ovPnl').textContent=a.total_pnl_dollars!=null?`$${a.total_pnl_dollars.toLocaleString('en-US',{minimumFractionDigits:2})}`:'--';
+      const pts=curve.points.length?curve.points:[{date:'No data',equity:100000}];
+      eqC=mkChart('eqChart',pts,eqC);
+      const sigs=(sum.latest_signals||[]).filter(s=>s.signal===1).slice(0,8);
+      document.getElementById('ovSigTbl').innerHTML=sigs.map(s=>`<tr><td>${s.symbol}</td><td>${s.ibs!=null?s.ibs.toFixed(3):'--'}</td><td><span class="badge ok">Yes</span></td><td><span class="badge ${s.verified?'ok':'no'}">${s.verified?'Yes':'No'}</span></td></tr>`).join('')||'<tr><td colspan="4" class="tiny">No signals yet -- run a scan first</td></tr>';
+      renderJournal(sum.journal||[]);
+      renderOrders(sum.broker_orders||[]);
+    }catch(e){toast('Refresh failed: '+e.message,'err');}
+  }
+  document.getElementById('refreshBtn').onclick=refreshOverview;
+  document.getElementById('runScanBtn').onclick=async()=>{
+    const btn=document.getElementById('runScanBtn');
+    btn.disabled=true;btn.textContent='Scanning...';
+    try{
+      const payload={
+        symbols:document.getElementById('sSyms').value.split(',').map(s=>s.trim()).filter(Boolean),
+        ibs_threshold:+document.getElementById('sIbs').value,
+        range_factor_threshold:+document.getElementById('sRf').value,
+        account_equity:+document.getElementById('sEq').value,
+        risk_frac:+document.getElementById('sRisk').value,
+        auto_execute:document.getElementById('sAuto').checked,
+        lookback_high:10,lookback_range:25,source_tolerance:0.05,max_hold_bars:5,fee_bps:2,slippage_bps:3
+      };
+      const data=await apiJSON('/api/scan',{method:'POST',body:JSON.stringify(payload)});
+      document.getElementById('scanTbl').innerHTML=(data.results||[]).map(r=>{
+        if(r.error)return`<tr><td>${r.symbol}</td><td colspan="10" class="no">${r.error}</td></tr>`;
+        const ord=r.broker_order?(r.broker_order.status??'sent'):'--';
+        return`<tr><td><strong>${r.symbol}</strong></td><td>${r.date}</td><td>${r.ibs??'--'}</td><td>${r.range_factor??'--'}</td><td>${r.close_diff}</td><td><span class="badge ${r.verified?'ok':'no'}">${r.verified?'V':'X'}</span></td><td><span class="badge ${r.signal?'ok':'warn'}">${r.signal?'Yes':'No'}</span></td><td>${r.max_drawdown_pct??'--'}%</td><td>${r.trade_count}</td><td>${r.win_rate!=null?(r.win_rate*100).toFixed(1)+'%':'--'}</td><td><span class="badge ${ord!=='--'?'info':''}">${ord}</span></td></tr>`;
+      }).join('');
+      const a=data.portfolio_analytics||{};
+      if(a.by_symbol){document.getElementById('scanAnalytics').innerHTML=`<div class="card stack"><h3>This scan analytics</h3><div class="g4"><div class="kpi"><div class="label">Trades</div><div class="val">${a.total_trades}</div></div><div class="kpi"><div class="label">Win rate</div><div class="val">${(a.win_rate*100).toFixed(1)}%</div></div><div class="kpi"><div class="label">Profit factor</div><div class="val">${a.profit_factor??'--'}</div></div><div class="kpi"><div class="label">Total PnL</div><div class="val">$${(a.total_pnl_dollars||0).toLocaleString('en-US',{minimumFractionDigits:2})}</div></div></div></div>`;}
+      toast('Scan complete','ok');
+      await refreshOverview();
+    }catch(e){toast('Scan error: '+e.message,'err');}
+    finally{btn.disabled=false;btn.textContent='Run scan';}
+  };
+  document.getElementById('triggerEodBtn').onclick=async()=>{
+    const btn=document.getElementById('triggerEodBtn');
+    btn.disabled=true;btn.textContent='Running...';
+    try{
+      await apiJSON('/api/cron/eod-scan',{method:'POST'});
+      toast('EOD scan triggered','ok');
+      await refreshOverview();
+    }catch(e){toast('Trigger failed: '+e.message,'err');}
+    finally{btn.disabled=false;btn.textContent='Trigger EOD scan';}
+  };
+  async function refreshPortfolio(){
+    try{
+      const [a,curve]=await Promise.all([apiJSON('/api/portfolio/analytics'),apiJSON('/api/equity-curve')]);
+      document.getElementById('portKpis').innerHTML=`<div class="kpi"><div class="label">Trades</div><div class="val">${a.total_trades??0}</div></div><div class="kpi"><div class="label">Win rate</div><div class="val">${a.win_rate!=null?(a.win_rate*100).toFixed(1)+'%':'--'}</div></div><div class="kpi"><div class="label">Profit factor</div><div class="val">${a.profit_factor??'--'}</div></div><div class="kpi"><div class="label">Total PnL</div><div class="val">$${(a.total_pnl_dollars||0).toLocaleString('en-US',{minimumFractionDigits:2})}</div></div>`;
+      document.getElementById('portTbl').innerHTML=(a.by_symbol||[]).map(s=>`<tr><td>${s.symbol}</td><td>${s.trades}</td><td>${(s.win_rate*100).toFixed(1)}%</td><td>${(s.avg_net*100).toFixed(3)}%</td><td>$${(s.total_pnl||0).toFixed(2)}</td></tr>`).join('')||'<tr><td colspan="5" class="tiny">No trades yet</td></tr>';
+      const pts=curve.points.length?curve.points:[{date:'No data',equity:100000}];
+      portC=mkChart('portChart',pts,portC);
+    }catch(e){toast('Portfolio error: '+e.message,'err');}
+  }
+  document.getElementById('refPortBtn').onclick=refreshPortfolio;
+  document.getElementById('loadVerBtn').onclick=async()=>{
+    const sym=document.getElementById('vSym').value.trim().toUpperCase();
+    try{
+      const d=await apiJSON(`/api/verification/${sym}`);
+      document.getElementById('verTbl').innerHTML=(d.rows||[]).map(r=>`<tr><td>${r.date}</td><td>${r.primary_close?.toFixed(2)??'--'}</td><td>${r.secondary_close?.toFixed(2)??'--'}</td><td>${r.open_diff}</td><td>${r.high_diff}</td><td>${r.low_diff}</td><td>${r.close_diff}</td><td><span class="badge ${r.verified?'ok':'no'}">${r.verified?'Verified':'Mismatch'}</span></td></tr>`).join('')||'<tr><td colspan="8" class="tiny">No data -- run a scan first</td></tr>';
+    }catch(e){toast(e.message,'err');}
+  };
+  function renderJournal(rows){
+    document.getElementById('jTbl').innerHTML=rows.map(r=>`<tr><td>${r.trade_date}</td><td>${r.symbol}</td><td>${r.entry_price??''}</td><td>${r.exit_price??''}</td><td>${r.shares??''}</td><td>${r.verified?'Yes':'No'}</td><td>${r.notes??''}</td></tr>`).join('')||'<tr><td colspan="7" class="tiny">No entries yet</td></tr>';
+  }
+  document.getElementById('jDate').value=new Date().toISOString().slice(0,10);
+  document.getElementById('saveJournalBtn').onclick=async()=>{
+    try{
+      await apiJSON('/api/journal',{method:'POST',body:JSON.stringify({
+        symbol:document.getElementById('jSym').value.trim().toUpperCase(),
+        trade_date:document.getElementById('jDate').value,
+        entry_price:+document.getElementById('jEntry').value,
+        exit_price:+document.getElementById('jExit').value,
+        shares:+document.getElementById('jShares').value,
+        verified:1,notes:document.getElementById('jNotes').value,
+      })});
+      const d=await apiJSON('/api/journal');
+      renderJournal(d.rows||[]);
+      toast('Saved','ok');
+    }catch(e){toast(e.message,'err');}
+  };
+  function renderOrders(rows){
+    document.getElementById('ordTbl').innerHTML=rows.map(r=>`<tr><td>${r.symbol}</td><td>${r.signal_date}</td><td>${r.qty}</td><td>${r.side}</td><td><span class="badge info">${r.status}</span></td><td>${r.submitted_at}</td></tr>`).join('')||'<tr><td colspan="6" class="tiny">No orders yet</td></tr>';
+  }
+  async function refreshOrders(){try{const d=await apiJSON('/api/broker/orders');renderOrders(d.orders||[]);}catch(e){toast(e.message,'err');}}
+  document.getElementById('refOrdBtn').onclick=refreshOrders;
+  document.querySelectorAll('[data-exp]').forEach(btn=>btn.addEventListener('click',async()=>{
+    try{
+      const res=await apiFetch(btn.dataset.exp);
+      const blob=await res.blob();
+      const url=URL.createObjectURL(blob);
+      const a=document.createElement('a');a.href=url;a.download=btn.dataset.fn;a.click();
+      URL.revokeObjectURL(url);
+      toast(btn.dataset.fn+' downloaded','ok');
+    }catch(e){toast('Export failed: '+e.message,'err');}
+  }));
+</script>
+</body>
+</html>
