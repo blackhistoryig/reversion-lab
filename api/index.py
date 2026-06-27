@@ -6,7 +6,7 @@ from typing import List, Optional
 import numpy as np
 import pandas as pd
 import requests as httpx
-from fastapi import Depends, FastAPI, Header, HTTPException, Query, status
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
@@ -402,8 +402,10 @@ def scan(req: ScanRequest):
     results, analytics = run_scan(req)
     return {"results": results, "portfolio_analytics": analytics}
 
-@app.post("/api/cron/eod-scan")
-def cron_eod_scan(authorization: Optional[str] = Header(None)):
+# ── cron endpoint — accepts GET (Vercel built-in) AND POST (external cron) ──
+@app.api_route("/api/cron/eod-scan", methods=["GET", "POST"])
+async def cron_eod_scan(request: Request):
+    authorization = request.headers.get("Authorization", "")
     if CRON_SECRET and authorization != f"Bearer {CRON_SECRET}":
         raise HTTPException(401, detail="Unauthorized")
     cfg = ScanRequest(symbols=DEFAULT_SYMBOLS)
