@@ -78,6 +78,7 @@
     <div><label>API URL</label><input class="inp" id="aUrl" placeholder="https://your-app.vercel.app"/></div>
     <div><label>Username</label><input class="inp" id="aUser" value="admin" autocomplete="username"/></div>
     <div><label>Password</label><input class="inp" id="aPass" type="password" autocomplete="current-password"/></div>
+    <div><label>Cron Secret <span style="font-weight:400;opacity:.6">(optional — for Trigger EOD button)</span></label><input class="inp" id="aCron" type="password" placeholder="your CRON_SECRET value"/></div>
     <div id="aErr" class="tiny no" style="display:none"></div>
     <button class="btn btn-primary" id="loginBtn" style="width:100%">Connect</button>
   </div>
@@ -138,9 +139,9 @@
       <div class="card stack">
         <h2>Scanner</h2>
         <div class="row">
-          <div style="flex:2;min-width:180px"><label>Symbols</label><input class="inp" id="sSyms" value="SPY,QQQ,AAPL,IWM,TLT"/></div>
-          <div style="min-width:110px"><label>IBS threshold</label><input class="inp" id="sIbs" value="0.30"/></div>
-          <div style="min-width:110px"><label>Range factor</label><input class="inp" id="sRf" value="2.5"/></div>
+          <div style="flex:2;min-width:180px"><label>Symbols</label><input class="inp" id="sSyms" value="SPY,QQQ,AAPL,IWM,NVDA"/></div>
+          <div style="min-width:110px"><label>IBS threshold</label><input class="inp" id="sIbs" value="0.20"/></div>
+          <div style="min-width:110px"><label>Range factor</label><input class="inp" id="sRf" value="3.0"/></div>
           <div style="min-width:130px"><label>Account equity $</label><input class="inp" id="sEq" value="100000"/></div>
           <div style="min-width:110px"><label>Risk per trade</label><input class="inp" id="sRisk" value="0.005"/></div>
         </div>
@@ -209,7 +210,7 @@
 </div>
 <div id="toast"></div>
 <script>
-  let API='',AUTH='';
+  let API='',AUTH='',CRON_SECRET='';
   let eqC=null,portC=null;
   let dark=matchMedia('(prefers-color-scheme:dark)').matches;
   if(dark)document.documentElement.setAttribute('data-dark','');
@@ -243,6 +244,7 @@
     const p=document.getElementById('aPass').value;
     API=document.getElementById('aUrl').value.replace(/\/$/,'');
     AUTH='Basic '+btoa(`${u}:${p}`);
+    CRON_SECRET=document.getElementById('aCron').value.trim();
     try{
       await apiJSON('/api/config');
       document.getElementById('connBadge').textContent='Connected';
@@ -257,7 +259,7 @@
   };
   document.getElementById('aPass').addEventListener('keydown',e=>{if(e.key==='Enter')document.getElementById('loginBtn').click();});
   document.getElementById('logoutBtn').onclick=()=>{
-    AUTH='';API='';
+    AUTH='';API='';CRON_SECRET='';
     document.getElementById('connBadge').textContent='Disconnected';
     document.getElementById('connBadge').className='badge no';
     document.getElementById('authWall').style.display='flex';
@@ -319,7 +321,10 @@
     const btn=document.getElementById('triggerEodBtn');
     btn.disabled=true;btn.textContent='Running...';
     try{
-      await apiJSON('/api/cron/eod-scan',{method:'POST'});
+      const headers={'Content-Type':'application/json'};
+      if(CRON_SECRET)headers['Authorization']=`Bearer ${CRON_SECRET}`;
+      const res=await fetch(`${API}/api/cron/eod-scan`,{method:'POST',headers});
+      if(!res.ok)throw new Error(`${res.status} ${res.statusText}`);
       toast('EOD scan triggered','ok');
       await refreshOverview();
     }catch(e){toast('Trigger failed: '+e.message,'err');}
