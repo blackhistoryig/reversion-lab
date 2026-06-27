@@ -20,7 +20,7 @@ POLYGON_KEY       = os.getenv("POLYGON_KEY",        "")
 ALPACA_KEY_ID     = os.getenv("ALPACA_KEY_ID",      "")
 ALPACA_SECRET_KEY = os.getenv("ALPACA_SECRET_KEY",  "")
 ALPACA_BASE_URL   = os.getenv("ALPACA_BASE_URL",    "https://paper-api.alpaca.markets")
-DEFAULT_SYMBOLS   = [s.strip().upper() for s in os.getenv("SYMBOLS", "SPY,QQQ,AAPL,IWM,TLT").split(",") if s.strip()]
+DEFAULT_SYMBOLS   = [s.strip().upper() for s in os.getenv("SYMBOLS", "SPY,QQQ,AAPL,IWM,NVDA").split(",") if s.strip()]
 DASHBOARD_USER    = os.getenv("DASHBOARD_USER",     "admin")
 DASHBOARD_PASS    = os.getenv("DASHBOARD_PASS",     "changeme")
 RISK_FRAC         = float(os.getenv("RISK_FRAC",    "0.005"))
@@ -51,8 +51,8 @@ def require_auth(credentials: HTTPBasicCredentials = Depends(security)):
 # ── models ────────────────────────────────────────────────────────────────
 class ScanRequest(BaseModel):
     symbols: List[str]
-    ibs_threshold: float = 0.30
-    range_factor_threshold: float = 2.5
+    ibs_threshold: float = 0.20
+    range_factor_threshold: float = 3.0
     lookback_high: int = 10
     lookback_range: int = 25
     source_tolerance: float = 0.05
