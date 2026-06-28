@@ -408,7 +408,7 @@ async def cron_eod_scan(request: Request):
     authorization = request.headers.get("Authorization", "")
     if CRON_SECRET and authorization != f"Bearer {CRON_SECRET}":
         raise HTTPException(401, detail="Unauthorized")
-    cfg = ScanRequest(symbols=DEFAULT_SYMBOLS)
+    cfg = ScanRequest(symbols=DEFAULT_SYMBOLS, auto_execute=True)
     results, analytics = run_scan(cfg)
     return {"ok": True, "scanned": len(results), "analytics": analytics, "timestamp": datetime.utcnow().isoformat()}
 
