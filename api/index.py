@@ -1,12 +1,15 @@
-"""Reversion Lab — Vercel serverless FastAPI backend"""
-import io, os, secrets, sqlite3
+"""Reversion Lab — Vercel serverless FastAPI backend (Postgres)"""
+import io, os, secrets
+from contextlib import contextmanager
 from datetime import datetime
 from typing import List, Optional
 
 import numpy as np
 import pandas as pd
+import psycopg2
+import psycopg2.extras
 import requests as httpx
-from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, status
+from fastapi import Depends, FastAPI, HTTPException, Query, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
@@ -14,27 +17,25 @@ from mangum import Mangum
 from pydantic import BaseModel
 
 # ── config ────────────────────────────────────────────────────────────────
-DB_PATH           = os.getenv("REVERSION_DB",       "/tmp/reversion_lab.db")
-TWELVE_DATA_KEY   = os.getenv("TWELVE_DATA_KEY",    "")
-POLYGON_KEY       = os.getenv("POLYGON_KEY",        "")
-ALPACA_KEY_ID     = os.getenv("ALPACA_KEY_ID",      "")
-ALPACA_SECRET_KEY = os.getenv("ALPACA_SECRET_KEY",  "")
-ALPACA_BASE_URL   = os.getenv("ALPACA_BASE_URL",    "https://paper-api.alpaca.markets")
+DATABASE_URL      = os.getenv("POSTGRES_URL") or os.getenv("DATABASE_URL", "")
+TWELVE_DATA_KEY   = os.getenv("TWELVE_DATA_KEY",   "")
+POLYGON_KEY       = os.getenv("POLYGON_KEY",       "")
+ALPACA_KEY_ID     = os.getenv("ALPACA_KEY_ID",     "")
+ALPACA_SECRET_KEY = os.getenv("ALPACA_SECRET_KEY", "")
+ALPACA_BASE_URL   = os.getenv("ALPACA_BASE_URL",   "https://paper-api.alpaca.markets")
 DEFAULT_SYMBOLS   = [s.strip().upper() for s in os.getenv("SYMBOLS", "SPY,QQQ,AAPL,IWM,NVDA").split(",") if s.strip()]
-DASHBOARD_USER    = os.getenv("DASHBOARD_USER",     "admin")
-DASHBOARD_PASS    = os.getenv("DASHBOARD_PASS",     "changeme")
-RISK_FRAC         = float(os.getenv("RISK_FRAC",    "0.01"))
-CRON_SECRET       = os.getenv("CRON_SECRET",        "")
+DASHBOARD_USER    = os.getenv("DASHBOARD_USER",    "admin")
+DASHBOARD_PASS    = os.getenv("DASHBOARD_PASS",    "changeme")
+RISK_FRAC         = float(os.getenv("RISK_FRAC",   "0.01"))
+CRON_SECRET       = os.getenv("CRON_SECRET",       "")
 
 # ── app ───────────────────────────────────────────────────────────────────
 security = HTTPBasic()
-app = FastAPI(title="Reversion Lab", version="1.0.0")
+app = FastAPI(title="Reversion Lab", version="2.0.0")
 app.add_middleware(
     CORSMiddleware, allow_origins=["*"],
     allow_credentials=True, allow_methods=["*"], allow_headers=["*"],
 )
-
-# Mangum adapter — wraps ASGI app for Vercel serverless
 handler = Mangum(app, lifespan="off")
 
 # ── auth ──────────────────────────────────────────────────────────────────
@@ -51,8 +52,8 @@ def require_auth(credentials: HTTPBasicCredentials = Depends(security)):
 # ── models ────────────────────────────────────────────────────────────────
 class ScanRequest(BaseModel):
     symbols: List[str]
-    ibs_threshold: float = 0.25
-    range_factor_threshold: float = 3.5
+    ibs_threshold: float = 0.20
+    range_factor_threshold: float = 3.0
     lookback_high: int = 10
     lookback_range: int = 25
     source_tolerance: float = 0.05
@@ -78,46 +79,65 @@ class JournalTrade(BaseModel):
     notes: Optional[str] = None
 
 # ── db ────────────────────────────────────────────────────────────────────
+@contextmanager
 def get_conn():
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    return conn
+    if not DATABASE_URL:
+        raise HTTPException(500, detail="DATABASE_URL not configured — connect a Postgres database in Vercel Storage")
+    # Neon requires sslmode=require; psycopg2 needs the URL massaged
+    url = DATABASE_URL
+    if url.startswith("postgres://"):
+        url = url.replace("postgres://", "postgresql://", 1)
+    conn = psycopg2.connect(url, sslmode="require", cursor_factory=psycopg2.extras.RealDictCursor)
+    try:
+        yield conn
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
 
 def init_db():
-    conn = get_conn()
-    conn.executescript("""
-    CREATE TABLE IF NOT EXISTS verification_audit (
-      symbol TEXT NOT NULL, date TEXT NOT NULL,
-      primary_open REAL, primary_high REAL, primary_low REAL, primary_close REAL,
-      secondary_open REAL, secondary_high REAL, secondary_low REAL, secondary_close REAL,
-      open_diff REAL, high_diff REAL, low_diff REAL, close_diff REAL,
-      verified INTEGER NOT NULL, PRIMARY KEY (symbol, date));
-    CREATE TABLE IF NOT EXISTS signals (
-      symbol TEXT NOT NULL, date TEXT NOT NULL,
-      ibs REAL, range_factor REAL, verified INTEGER NOT NULL,
-      signal INTEGER NOT NULL, close REAL, PRIMARY KEY (symbol, date));
-    CREATE TABLE IF NOT EXISTS trades (
-      trade_id INTEGER PRIMARY KEY AUTOINCREMENT,
-      symbol TEXT NOT NULL, signal_date TEXT NOT NULL,
-      entry_date TEXT NOT NULL, exit_date TEXT NOT NULL,
-      entry_price REAL NOT NULL, exit_price REAL NOT NULL,
-      shares REAL, dollar_risk REAL,
-      gross_return REAL, net_return REAL, pnl_dollars REAL,
-      bars_held INTEGER, verified INTEGER NOT NULL,
-      ibs REAL, range_factor REAL, equity_after REAL);
-    CREATE TABLE IF NOT EXISTS broker_orders (
-      order_id TEXT PRIMARY KEY, symbol TEXT NOT NULL,
-      signal_date TEXT NOT NULL, qty REAL, side TEXT,
-      order_type TEXT, status TEXT, submitted_at TEXT, alpaca_response TEXT);
-    CREATE TABLE IF NOT EXISTS trade_journal (
-      journal_id INTEGER PRIMARY KEY AUTOINCREMENT,
-      symbol TEXT NOT NULL, trade_date TEXT NOT NULL, side TEXT NOT NULL,
-      entry_price REAL, exit_price REAL, shares REAL, r_multiple REAL,
-      source_1_close REAL, source_2_close REAL,
-      verified INTEGER NOT NULL DEFAULT 0, notes TEXT);
-    """)
-    conn.commit()
-    conn.close()
+    try:
+        with get_conn() as conn:
+            cur = conn.cursor()
+            cur.execute("""
+            CREATE TABLE IF NOT EXISTS verification_audit (
+              symbol TEXT NOT NULL, date TEXT NOT NULL,
+              primary_open REAL, primary_high REAL, primary_low REAL, primary_close REAL,
+              secondary_open REAL, secondary_high REAL, secondary_low REAL, secondary_close REAL,
+              open_diff REAL, high_diff REAL, low_diff REAL, close_diff REAL,
+              verified INTEGER NOT NULL, PRIMARY KEY (symbol, date));
+
+            CREATE TABLE IF NOT EXISTS signals (
+              symbol TEXT NOT NULL, date TEXT NOT NULL,
+              ibs REAL, range_factor REAL, verified INTEGER NOT NULL,
+              signal INTEGER NOT NULL, close REAL, PRIMARY KEY (symbol, date));
+
+            CREATE TABLE IF NOT EXISTS trades (
+              trade_id SERIAL PRIMARY KEY,
+              symbol TEXT NOT NULL, signal_date TEXT NOT NULL,
+              entry_date TEXT NOT NULL, exit_date TEXT NOT NULL,
+              entry_price REAL NOT NULL, exit_price REAL NOT NULL,
+              shares REAL, dollar_risk REAL,
+              gross_return REAL, net_return REAL, pnl_dollars REAL,
+              bars_held INTEGER, verified INTEGER NOT NULL,
+              ibs REAL, range_factor REAL, equity_after REAL);
+
+            CREATE TABLE IF NOT EXISTS broker_orders (
+              order_id TEXT PRIMARY KEY, symbol TEXT NOT NULL,
+              signal_date TEXT NOT NULL, qty REAL, side TEXT,
+              order_type TEXT, status TEXT, submitted_at TEXT, alpaca_response TEXT);
+
+            CREATE TABLE IF NOT EXISTS trade_journal (
+              journal_id SERIAL PRIMARY KEY,
+              symbol TEXT NOT NULL, trade_date TEXT NOT NULL, side TEXT NOT NULL,
+              entry_price REAL, exit_price REAL, shares REAL, r_multiple REAL,
+              source_1_close REAL, source_2_close REAL,
+              verified INTEGER NOT NULL DEFAULT 0, notes TEXT);
+            """)
+    except Exception:
+        pass  # if DB not yet connected, fail gracefully at request time
 
 init_db()
 
@@ -285,39 +305,56 @@ def portfolio_analytics(df: pd.DataFrame) -> dict:
 
 # ── persist ───────────────────────────────────────────────────────────────
 def persist_symbol(symbol, verified, signals, trades_df):
-    conn = get_conn()
     def d(v):
         return str(v.date()) if hasattr(v, "date") else str(v)
-    conn.executemany(
-        "INSERT OR REPLACE INTO verification_audit VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-        [(symbol, d(r["date"]), r.get("primary_open"), r.get("primary_high"), r.get("primary_low"), r.get("primary_close"),
-          r.get("secondary_open"), r.get("secondary_high"), r.get("secondary_low"), r.get("secondary_close"),
-          r.get("open_diff"), r.get("high_diff"), r.get("low_diff"), r.get("close_diff"), int(r["verified"]))
-         for _, r in verified.tail(500).iterrows()],
-    )
-    conn.executemany(
-        "INSERT OR REPLACE INTO signals VALUES (?,?,?,?,?,?,?)",
-        [(symbol, d(r["date"]),
-          None if pd.isna(r["ibs"]) else float(r["ibs"]),
-          None if pd.isna(r.get("range_factor", float("nan"))) else float(r["range_factor"]),
-          int(r["verified"]), int(r["signal"]), float(r["close"]))
-         for _, r in signals.tail(500).iterrows()],
-    )
-    if not trades_df.empty:
-        conn.executemany(
-            """INSERT INTO trades
-               (symbol,signal_date,entry_date,exit_date,entry_price,exit_price,shares,dollar_risk,
-                gross_return,net_return,pnl_dollars,bars_held,verified,ibs,range_factor,equity_after)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-            [(r["symbol"], r["signal_date"], r["entry_date"], r["exit_date"],
-              r["entry_price"], r["exit_price"], r.get("shares"), r.get("dollar_risk"),
-              r["gross_return"], r["net_return"], r.get("pnl_dollars"),
-              int(r["bars_held"]), int(r["verified"]), r["ibs"],
-              r.get("range_factor"), r["equity_after"])
-             for _, r in trades_df.iterrows()],
+
+    with get_conn() as conn:
+        cur = conn.cursor()
+        psycopg2.extras.execute_values(cur,
+            """INSERT INTO verification_audit
+               (symbol,date,primary_open,primary_high,primary_low,primary_close,
+                secondary_open,secondary_high,secondary_low,secondary_close,
+                open_diff,high_diff,low_diff,close_diff,verified)
+               VALUES %s
+               ON CONFLICT (symbol,date) DO UPDATE SET
+                 primary_open=EXCLUDED.primary_open, primary_high=EXCLUDED.primary_high,
+                 primary_low=EXCLUDED.primary_low, primary_close=EXCLUDED.primary_close,
+                 secondary_open=EXCLUDED.secondary_open, secondary_high=EXCLUDED.secondary_high,
+                 secondary_low=EXCLUDED.secondary_low, secondary_close=EXCLUDED.secondary_close,
+                 open_diff=EXCLUDED.open_diff, high_diff=EXCLUDED.high_diff,
+                 low_diff=EXCLUDED.low_diff, close_diff=EXCLUDED.close_diff,
+                 verified=EXCLUDED.verified""",
+            [(symbol, d(r["date"]),
+              r.get("primary_open"), r.get("primary_high"), r.get("primary_low"), r.get("primary_close"),
+              r.get("secondary_open"), r.get("secondary_high"), r.get("secondary_low"), r.get("secondary_close"),
+              r.get("open_diff"), r.get("high_diff"), r.get("low_diff"), r.get("close_diff"), int(r["verified"]))
+             for _, r in verified.tail(500).iterrows()]
         )
-    conn.commit()
-    conn.close()
+        psycopg2.extras.execute_values(cur,
+            """INSERT INTO signals (symbol,date,ibs,range_factor,verified,signal,close)
+               VALUES %s
+               ON CONFLICT (symbol,date) DO UPDATE SET
+                 ibs=EXCLUDED.ibs, range_factor=EXCLUDED.range_factor,
+                 verified=EXCLUDED.verified, signal=EXCLUDED.signal, close=EXCLUDED.close""",
+            [(symbol, d(r["date"]),
+              None if pd.isna(r["ibs"]) else float(r["ibs"]),
+              None if pd.isna(r.get("range_factor", float("nan"))) else float(r["range_factor"]),
+              int(r["verified"]), int(r["signal"]), float(r["close"]))
+             for _, r in signals.tail(500).iterrows()]
+        )
+        if not trades_df.empty:
+            psycopg2.extras.execute_values(cur,
+                """INSERT INTO trades
+                   (symbol,signal_date,entry_date,exit_date,entry_price,exit_price,shares,dollar_risk,
+                    gross_return,net_return,pnl_dollars,bars_held,verified,ibs,range_factor,equity_after)
+                   VALUES %s""",
+                [(r["symbol"], r["signal_date"], r["entry_date"], r["exit_date"],
+                  r["entry_price"], r["exit_price"], r.get("shares"), r.get("dollar_risk"),
+                  r["gross_return"], r["net_return"], r.get("pnl_dollars"),
+                  int(r["bars_held"]), int(r["verified"]), r["ibs"],
+                  r.get("range_factor"), r["equity_after"])
+                 for _, r in trades_df.iterrows()]
+            )
 
 # ── broker ────────────────────────────────────────────────────────────────
 def submit_alpaca_order(symbol, qty, signal_date):
@@ -327,14 +364,14 @@ def submit_alpaca_order(symbol, qty, signal_date):
     payload = {"symbol": symbol, "qty": str(qty), "side": "buy", "type": "market", "time_in_force": "day"}
     r = httpx.post(f"{ALPACA_BASE_URL}/v2/orders", json=payload, headers=headers, timeout=15)
     resp = r.json()
-    conn = get_conn()
-    conn.execute(
-        "INSERT OR REPLACE INTO broker_orders VALUES (?,?,?,?,?,?,?,?,?)",
-        (resp.get("id", ""), symbol, signal_date, qty, "buy", "market",
-         resp.get("status", ""), datetime.utcnow().isoformat(), str(resp)),
-    )
-    conn.commit()
-    conn.close()
+    with get_conn() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            """INSERT INTO broker_orders VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)
+               ON CONFLICT (order_id) DO NOTHING""",
+            (resp.get("id", ""), symbol, signal_date, qty, "buy", "market",
+             resp.get("status", ""), datetime.utcnow().isoformat(), str(resp)),
+        )
     return resp
 
 # ── core scan ─────────────────────────────────────────────────────────────
@@ -387,7 +424,7 @@ def run_scan(cfg: ScanRequest):
 # ── routes ────────────────────────────────────────────────────────────────
 @app.get("/api/health")
 def health():
-    return {"ok": True, "time": datetime.utcnow().isoformat(), "version": "1.0.0"}
+    return {"ok": True, "time": datetime.utcnow().isoformat(), "version": "2.0.0", "db": "postgres"}
 
 @app.get("/api/config", dependencies=[Depends(require_auth)])
 def get_config():
@@ -402,7 +439,6 @@ def scan(req: ScanRequest):
     results, analytics = run_scan(req)
     return {"results": results, "portfolio_analytics": analytics}
 
-# ── cron endpoint — accepts GET (Vercel built-in) AND POST (external cron) ──
 @app.api_route("/api/cron/eod-scan", methods=["GET", "POST"])
 async def cron_eod_scan(request: Request):
     authorization = request.headers.get("Authorization", "")
@@ -414,12 +450,16 @@ async def cron_eod_scan(request: Request):
 
 @app.get("/api/dashboard-summary", dependencies=[Depends(require_auth)])
 def dashboard_summary():
-    conn = get_conn()
-    latest_signals = [dict(r) for r in conn.execute("SELECT * FROM signals ORDER BY date DESC LIMIT 100").fetchall()]
-    latest_trades  = [dict(r) for r in conn.execute("SELECT * FROM trades ORDER BY trade_id DESC LIMIT 500").fetchall()]
-    journal        = [dict(r) for r in conn.execute("SELECT * FROM trade_journal ORDER BY journal_id DESC LIMIT 50").fetchall()]
-    broker_orders  = [dict(r) for r in conn.execute("SELECT * FROM broker_orders ORDER BY submitted_at DESC LIMIT 20").fetchall()]
-    conn.close()
+    with get_conn() as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT * FROM signals ORDER BY date DESC LIMIT 100")
+        latest_signals = [dict(r) for r in cur.fetchall()]
+        cur.execute("SELECT * FROM trades ORDER BY trade_id DESC LIMIT 500")
+        latest_trades = [dict(r) for r in cur.fetchall()]
+        cur.execute("SELECT * FROM trade_journal ORDER BY journal_id DESC LIMIT 50")
+        journal = [dict(r) for r in cur.fetchall()]
+        cur.execute("SELECT * FROM broker_orders ORDER BY submitted_at DESC LIMIT 20")
+        broker_orders = [dict(r) for r in cur.fetchall()]
     trades_df = pd.DataFrame(latest_trades)
     analytics = portfolio_analytics(trades_df) if not trades_df.empty else {}
     return {
@@ -431,57 +471,61 @@ def dashboard_summary():
 
 @app.get("/api/equity-curve", dependencies=[Depends(require_auth)])
 def equity_curve(limit: int = Query(300, ge=10, le=2000)):
-    conn = get_conn()
-    rows = conn.execute("SELECT exit_date as date, equity_after as equity FROM trades ORDER BY exit_date ASC").fetchall()
-    conn.close()
-    return {"points": [dict(r) for r in rows][-limit:]}
+    with get_conn() as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT exit_date as date, equity_after as equity FROM trades ORDER BY exit_date ASC")
+        rows = [dict(r) for r in cur.fetchall()]
+    return {"points": rows[-limit:]}
 
 @app.get("/api/verification/{symbol}", dependencies=[Depends(require_auth)])
 def verification(symbol: str, limit: int = Query(50, ge=1, le=500)):
-    conn = get_conn()
-    rows = conn.execute(
-        "SELECT * FROM verification_audit WHERE symbol=? ORDER BY date DESC LIMIT ?",
-        (symbol.upper(), limit),
-    ).fetchall()
-    conn.close()
-    return {"rows": [dict(r) for r in rows]}
+    with get_conn() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT * FROM verification_audit WHERE symbol=%s ORDER BY date DESC LIMIT %s",
+            (symbol.upper(), limit),
+        )
+        rows = [dict(r) for r in cur.fetchall()]
+    return {"rows": rows}
 
 @app.get("/api/portfolio/analytics", dependencies=[Depends(require_auth)])
 def port_analytics():
-    conn = get_conn()
-    rows = conn.execute("SELECT * FROM trades").fetchall()
-    conn.close()
-    return portfolio_analytics(pd.DataFrame([dict(r) for r in rows]))
+    with get_conn() as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT * FROM trades")
+        rows = [dict(r) for r in cur.fetchall()]
+    return portfolio_analytics(pd.DataFrame(rows))
 
 @app.get("/api/journal", dependencies=[Depends(require_auth)])
 def get_journal(limit: int = Query(100, ge=1, le=500)):
-    conn = get_conn()
-    rows = conn.execute("SELECT * FROM trade_journal ORDER BY journal_id DESC LIMIT ?", (limit,)).fetchall()
-    conn.close()
-    return {"rows": [dict(r) for r in rows]}
+    with get_conn() as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT * FROM trade_journal ORDER BY journal_id DESC LIMIT %s", (limit,))
+        rows = [dict(r) for r in cur.fetchall()]
+    return {"rows": rows}
 
 @app.post("/api/journal", dependencies=[Depends(require_auth)])
 def add_journal(trade: JournalTrade):
-    conn = get_conn()
-    conn.execute(
-        """INSERT INTO trade_journal
-        (symbol,trade_date,side,entry_price,exit_price,shares,r_multiple,
-         source_1_close,source_2_close,verified,notes)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
-        (trade.symbol.upper(), trade.trade_date, trade.side,
-         trade.entry_price, trade.exit_price, trade.shares, trade.r_multiple,
-         trade.source_1_close, trade.source_2_close, trade.verified, trade.notes),
-    )
-    conn.commit()
-    conn.close()
+    with get_conn() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            """INSERT INTO trade_journal
+               (symbol,trade_date,side,entry_price,exit_price,shares,r_multiple,
+                source_1_close,source_2_close,verified,notes)
+               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+            (trade.symbol.upper(), trade.trade_date, trade.side,
+             trade.entry_price, trade.exit_price, trade.shares, trade.r_multiple,
+             trade.source_1_close, trade.source_2_close, trade.verified, trade.notes),
+        )
     return {"ok": True}
 
 @app.get("/api/broker/orders", dependencies=[Depends(require_auth)])
 def broker_orders_list():
-    conn = get_conn()
-    rows = conn.execute("SELECT * FROM broker_orders ORDER BY submitted_at DESC LIMIT 100").fetchall()
-    conn.close()
-    return {"orders": [dict(r) for r in rows]}
+    with get_conn() as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT * FROM broker_orders ORDER BY submitted_at DESC LIMIT 100")
+        rows = [dict(r) for r in cur.fetchall()]
+    return {"orders": rows}
 
 # ── CSV exports ───────────────────────────────────────────────────────────
 def _csv_response(df: pd.DataFrame, filename: str) -> StreamingResponse:
@@ -496,36 +540,31 @@ def _csv_response(df: pd.DataFrame, filename: str) -> StreamingResponse:
 
 @app.get("/api/export/trades.csv", dependencies=[Depends(require_auth)])
 def export_trades():
-    conn = get_conn()
-    df = pd.read_sql("SELECT * FROM trades ORDER BY trade_id ASC", con=conn)
-    conn.close()
+    with get_conn() as conn:
+        df = pd.read_sql("SELECT * FROM trades ORDER BY trade_id ASC", con=conn)
     return _csv_response(df, "trades.csv")
 
 @app.get("/api/export/signals.csv", dependencies=[Depends(require_auth)])
 def export_signals():
-    conn = get_conn()
-    df = pd.read_sql("SELECT * FROM signals ORDER BY date ASC", con=conn)
-    conn.close()
+    with get_conn() as conn:
+        df = pd.read_sql("SELECT * FROM signals ORDER BY date ASC", con=conn)
     return _csv_response(df, "signals.csv")
 
 @app.get("/api/export/verification.csv", dependencies=[Depends(require_auth)])
 def export_verification():
-    conn = get_conn()
-    df = pd.read_sql("SELECT * FROM verification_audit ORDER BY date ASC", con=conn)
-    conn.close()
+    with get_conn() as conn:
+        df = pd.read_sql("SELECT * FROM verification_audit ORDER BY date ASC", con=conn)
     return _csv_response(df, "verification_audit.csv")
 
 @app.get("/api/export/journal.csv", dependencies=[Depends(require_auth)])
 def export_journal():
-    conn = get_conn()
-    df = pd.read_sql("SELECT * FROM trade_journal ORDER BY journal_id ASC", con=conn)
-    conn.close()
+    with get_conn() as conn:
+        df = pd.read_sql("SELECT * FROM trade_journal ORDER BY journal_id ASC", con=conn)
     return _csv_response(df, "journal.csv")
 
 @app.get("/api/export/portfolio-analytics.csv", dependencies=[Depends(require_auth)])
 def export_portfolio():
-    conn = get_conn()
-    df = pd.read_sql("SELECT * FROM trades", con=conn)
-    conn.close()
+    with get_conn() as conn:
+        df = pd.read_sql("SELECT * FROM trades", con=conn)
     a = portfolio_analytics(df)
     return _csv_response(pd.DataFrame(a.get("by_symbol", [])), "portfolio_analytics.csv")
